@@ -1,0 +1,180 @@
+---
+title: "People Analytics R Demo"
+author: "Coleton King"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: false
+    toc_depth: 3
+    theme: united
+---
+```{css, echo = FALSE}
+caption{
+  color: black;
+  font-weight: bold;
+  font-size: 1.5em;
+  }
+```
+
+# **Vignette**
+Company A instructs sales managers to promote junior sales associates on total sales and average customer ratings. Managers are also responsible for conducting developmental performance appraisals, and there is concern that they are relying on those ratings in promotion decisions.
+
+Using explicitly developmental appraisals in administrative decision-making can damage perceptions of procedural justice and erode employee trust, so it is crucial to identify whether managers are engaging in this practice and correct their approach.
+
+Given the nature of the sales associate role, developmental appraisals are likely influenced by sales and customer ratings. The crucial element of this analysis will be determining whether performance ratings influence promotion decisions *above and beyond* sales and customer ratings.
+
+# **Set up Environment**
+```{r, message = FALSE, warning = FALSE}
+# Install packages
+library(tidyverse)
+library(peopleanalyticsdata)
+library(car)
+library(MASS)
+library(ordinal)
+library(ggforce)
+library(knitr)
+library(kableExtra)
+library(lmtest)
+library(reshape2)
+library(devtools)
+
+# Load and format data
+sales.q <- peopleanalyticsdata::salespeople %>%
+  mutate(promoted = factor(promoted, labels = c("No", "Yes"))) %>%
+  filter(!is.na(promoted) & !is.na(sales) & !is.na(customer_rate) & !is.na(performance))
+
+sales.o <- sales.q %>%
+  mutate(performance = factor(performance, labels = c("Poor", "Fair", "Good", "Very Good")))
+
+kable(head(sales.o), align = "l",
+      caption = "Sample Sales Data") %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), position = "center") %>%
+  column_spec(1:4, width = "3cm")
+```
+
+# **Visualize Relationships of Interest**
+```{r, message = FALSE, warning = FALSE}
+# Graph sales x customer ratings, grouping by promotion
+ggplot(sales.o, aes(sales, customer_rate)) +
+  geom_point(aes(color = promoted)) +
+  geom_mark_ellipse(aes(color = promoted), expand = unit(0.05, "mm")) +
+  xlim(0, 1000) +
+  ylim(0, 6) +
+  labs(title = "Total Sales vs Avg Customer Ratings (Grouped by Promotion Status)", x = "Sales (Thousand $)", y = "Mean Customer Rating", color = "Promoted")
+
+# Graph sales x customer ratings, grouping by performance
+ggplot(sales.o, aes(sales, customer_rate)) +
+  geom_point(aes(color = performance)) +
+  geom_mark_ellipse(aes(color = performance), expand = unit(0.05, "mm")) +
+  xlim(0, 1000) +
+  ylim(0, 6) +
+  labs(title = "Total Sales vs Avg Customer Ratings (Grouped by Performance Rating)", x = "Sales (Thousand $)", y = "Mean Customer Rating", color = "Performance")
+
+# Graph promotion x performance rating
+sasi.t <- dcast(sales.o, promoted ~ performance)
+sasi <- melt(sasi.t)
+ggplot(sasi, aes(variable, promoted)) +
+  geom_point(aes(size = value, color = variable)) +
+  scale_size(range = c(2, 16)) + 
+  guides(color = FALSE) +
+  labs(title = "Relative Abundance of Performance Rating vs Promotion Status", x = "Performance", y = "Promoted", size = "Number")
+```
+
+# **Is Promotion Related to Performance?**
+
+## Test Assumptions
+```{r, message = FALSE, warning = FALSE}
+# VIF test for multicollineary
+kable(data.frame("VIF" = round(vif(lm(promoted ~ sales + customer_rate + performance, data = peopleanalyticsdata::salespeople)), 3),
+                 row.names = c("Sales", "Customer Rating", "Performance")),
+      caption = "VIF's for Linear-Treated Predictors") %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), position = "left")
+
+# Box-Tidwell test for linearity between predictors and log odds
+s1.log <- glm(promoted ~ sales + customer_rate + performance, data = sales.q, family = "binomial")
+kable(data.frame(round(boxTidwell(s1.log$linear.predictors ~ sales + customer_rate + performance, data = sales.q)$result, 3),
+                 row.names = c("Sales", "Customer Rating", "Performance")),
+      caption = "Box-Tidwell Tests on Linear-Treated Predictors") %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), position = "left")
+```
+
+VIF's for predictors are all < 5, indicating that multicollinearity is not present within the data.
+
+Box-Tidwell is not significant for any predictor, *p* > 0.05, indicating that the assumption of linearity between predictors and log odds of promotion is satisfied. The analysis will proceed.
+
+## Run Analysis
+```{r, message = FALSE, warning = FALSE}
+# Assess logistic model of promotion using staircase-coded ordinal performance
+sales.o <- sales.o %>%
+  mutate(P.to.F = ifelse(performance %in% c("Fair", "Good", "Very Good"), 1, 0),
+         F.to.G = ifelse(performance %in% c("Good", "Very Good"), 1, 0),
+         G.to.VG = ifelse(performance %in% c("Very Good"), 1, 0))
+
+s2.perf <- glm(promoted ~ P.to.F + F.to.G + G.to.VG, data = sales.o, family = "binomial")
+summary(s2.perf)
+kable(data.frame("Lower" = round(exp(confint(s2.perf)[,1]), 3),
+                 "Estimate" = round(exp(s2.perf$coefficients), 3),
+                 "Upper" = round(exp(confint(s2.perf)[,2]), 3))[2:4,],
+      align = "c",
+      caption = "Odds Ratio for Promotion from Stepwise Increase in Performance (95% CI)") %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), position = "center") %>%
+  column_spec(1, width = "5cm", bold = TRUE) %>%
+  column_spec(2:4, width = "5cm")
+
+# Assess logistic model of promotion using linear-treated performance
+s3.perf <- glm(promoted ~ performance, data = sales.q, family = "binomial")
+summary(s3.perf)
+kable(data.frame("Lower" = round(exp(confint(s3.perf)[,1]), 3),
+                 "Estimate" = round(exp(s3.perf$coefficients), 3),
+                 "Upper" = round(exp(confint(s3.perf)[,2]), 3))[2,],
+      align = "c",
+      caption = "Odds Ratio of Promotion from Linear-Treated Performance (95% CI)") %>%
+  kable_styling(bootstrap_options = c("hover", "condensed"), position = "center") %>%
+  column_spec(1, width = "5cm", bold = TRUE) %>%
+  column_spec(2:4, width = "5cm")
+
+# Compare performance model with a null model
+lrtest(s2.perf)
+lrtest(s3.perf)
+```
+
+Logistic regression on ordinal performance suggests that odds ratio of promotion roughly doubles between "Fair" -> "Good" and "Good" -> "Very Good" performance, *p* < 0.05. While this inference is weakened by the lack of an effect at the first step ("Poor" -> "Fair"), *p* > 0.05, a likelihood ratio test suggests that this model is a better fit for the data than a null model, *p* < 0.05.
+
+Logistic regression on linear-treated performance also supports an effect, *p* < 0.05, though treating ordinal variables as continuous prevents reliable inference using odds ratios. A likelihood ratio test suggests that this model is a better fit for the data than a null model, *p* < 0.05.
+
+Because this is a precautionary investigation, we have enough evidence to move forward under the belief that developmental performance ratings are related to promotion decisions.
+
+# **Does Performance Influence Promotion Beyond Covariates?**
+```{r, message = FALSE, warning = FALSE}
+# Model 1: Logistic model of promotion from sales and customer ratings
+s4.log <- glm(promoted ~ sales + customer_rate, data = sales.o, family = "binomial")
+
+# Model 2: Full logistic model of promotion
+s5.log <- glm(promoted ~ sales + customer_rate + P.to.F + F.to.G + G.to.VG, data = sales.o, family = "binomial")
+
+# Determine whether M2 improves maximum likelihood estimate
+anova(s4.log, s5.log, test = "Chisq")
+```
+
+Model comparison suggests that ordinal performance ratings do not influence promotion decisions beyond total sales and average customer ratings, *p* > 0.05. Therefore, we conclude that developmental instruments are not directly influencing promotion decisions. This finding does not rule out the possibility of interactive effects, which will be examined next.
+
+# **Does Performance Interact with Covariates?**
+```{r, message = FALSE, warning = FALSE}
+# Interactionist model with staircase-coded interactions
+s6.int <- glm(promoted ~ P.to.F + F.to.G + G.to.VG + sales + customer_rate + P.to.F*sales + F.to.G*sales + G.to.VG*sales + P.to.F*customer_rate + F.to.G*customer_rate + G.to.VG*customer_rate, data = sales.o, family = "binomial")
+anova(s4.log, s6.int, test = "Chisq")
+
+# Interactionist model with linear interactions
+s7.int <- glm(promoted ~ performance + sales + customer_rate + performance*sales + performance*customer_rate, data = sales.q, family = "binomial")
+anova(s4.log, s7.int, test = "Chisq")
+```
+
+Model comparisons suggest that neither the main effect of performance rating nor interactions with other predictors improve the maximum likelihood estimate of promotion, *p* > 0.05. We conclude that performance ratings do not influence promotion decisions beyond the confounding predictors, supporting the legitimacy and independence of both the promotion process and developmental performance appraisals.
+
+
+```{r}
+pa.demo <- peopleanalyticsdata::sociological_data
+write.csv(pa.demo, "pa.demo.csv")
+```
