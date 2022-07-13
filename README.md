@@ -1,5 +1,4 @@
 # People-Analytics
-People analytics projects
 Hello and welcome to my People Analytics repository!
 
 1) This repository contains coding projects I submit alongside job applications.
